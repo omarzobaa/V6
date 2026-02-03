@@ -4,6 +4,8 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local PhysicsService = game:GetService("PhysicsService")
+local TeleportService = game:GetService("TeleportService")
+local StarterGui = game:GetService("StarterGui")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
 
@@ -20,6 +22,8 @@ local SWITCH_GAP = S(6)
 local SWITCH_HEIGHT = BUTTON_HEIGHT
 local SWITCH_PADDING = S(3)
 local SWITCH_KNOB_SIZE = SWITCH_HEIGHT - (SWITCH_PADDING * 2)
+local SLIDER_TRACK_HEIGHT = S(6)
+local SLIDER_KNOB_SIZE = S(18)
 
 -- =========================
 -- DEFAULT BINDS (can rebind in GUI)
@@ -41,6 +45,12 @@ local HIGHLIGHT_NAME = "AnomalyESP_Highlight"
 -- =========================
 local MAX_RAY_DISTANCE = 1000
 local MAX_SNAP_TO_RAY = 8
+
+-- =========================
+-- WALK SPEED SETTINGS
+-- =========================
+local WALK_SPEED_SLIDER_MAX = 1000
+local WALK_SPEED_INPUT_MAX = 100000000000000000
 
 -- =========================
 -- LASER VISUAL
@@ -66,8 +76,25 @@ local noclipArmed = true
 local espEnabled = false
 local aimEnabled = false
 local noclipEnabled = false
+local walkSpeedEnabled = false
+local walkSpeedValue = 300
+local storedWalkSpeed: number? = nil
+local dragLock = false
+local dragBlockTargets = {} :: { [Instance]: boolean }
 local targetPart: BasePart? = nil
 local selectedPartName = "Head"
+
+getgenv().walkSpeedSettings = getgenv().walkSpeedSettings or {
+	WalkSpeed = {
+		Enabled = false,
+		Speed = walkSpeedValue,
+	},
+	Activation = {
+		WalkSpeedToggleKey = "T",
+	},
+}
+walkSpeedEnabled = getgenv().walkSpeedSettings.WalkSpeed.Enabled == true
+walkSpeedValue = tonumber(getgenv().walkSpeedSettings.WalkSpeed.Speed) or walkSpeedValue
 
 -- =========================
 -- NOCLIP SETTINGS
@@ -162,8 +189,51 @@ local function setNoclipState(state: boolean)
 	end
 end
 
+-- =========================
+-- WALK SPEED
+-- =========================
+local function getHumanoid()
+	local character = LocalPlayer.Character
+	if not character then return nil end
+	return character:FindFirstChildOfClass("Humanoid")
+end
+
+local function applyWalkSpeed()
+	local humanoid = getHumanoid()
+	if not humanoid then return end
+	if walkSpeedEnabled then
+		if not storedWalkSpeed then
+			storedWalkSpeed = humanoid.WalkSpeed
+		end
+		humanoid.WalkSpeed = walkSpeedValue
+	else
+		if storedWalkSpeed then
+			humanoid.WalkSpeed = storedWalkSpeed
+			storedWalkSpeed = nil
+		end
+	end
+end
+
+local function applyInstantWalkVelocity()
+	if not walkSpeedEnabled then return end
+	local humanoid = getHumanoid()
+	if not humanoid then return end
+	local rootPart = humanoid.RootPart or humanoid.Parent and humanoid.Parent:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+	local moveDir = humanoid.MoveDirection
+	local currentVel = rootPart.AssemblyLinearVelocity
+	if moveDir.Magnitude <= 0 then
+		rootPart.AssemblyLinearVelocity = Vector3.new(0, currentVel.Y, 0)
+		return
+	end
+	rootPart.AssemblyLinearVelocity = Vector3.new(moveDir.X * walkSpeedValue, currentVel.Y, moveDir.Z * walkSpeedValue)
+end
+
 if LocalPlayer.Character then
 	onNoclipCharacterAdded(LocalPlayer.Character)
+	if walkSpeedEnabled then
+		applyWalkSpeed()
+	end
 end
 LocalPlayer.CharacterAdded:Connect(onNoclipCharacterAdded)
 
@@ -454,7 +524,7 @@ end
 -- =========================
 local panel = mk("Frame", {
 	Name = "Panel",
-	Size = UDim2.fromOffset(S(410), S(620)),
+	Size = UDim2.fromOffset(S(410), S(940)),
 	Position = UDim2.fromOffset(S(20), S(120)),
 	BackgroundColor3 = Color3.fromRGB(10, 10, 12),
 	BorderSizePixel = 0,
@@ -660,9 +730,238 @@ noclipArmCtl.setOn(true, true)
 aimArmCtl.setOn(true, true)
 
 -- =========================
+-- WALK SPEED
+-- =========================
+sectionHeader("WALK SPEED", 122)
+
+local walkSpeedEnabledCtl
+local walkSpeedErrorLabel
+
+walkSpeedEnabledCtl = createIosSwitchRow(content, 142, "Walk Speed Enabled", function()
+	walkSpeedEnabled = not walkSpeedEnabled
+	getgenv().walkSpeedSettings.WalkSpeed.Enabled = walkSpeedEnabled
+	walkSpeedEnabledCtl.setOn(walkSpeedEnabled)
+	pulseUI()
+	applyWalkSpeed()
+end)
+walkSpeedEnabledCtl.setOn(walkSpeedEnabled, true)
+
+local sliderRow = mk("Frame", {
+	Size = UDim2.new(1, 0, 0, S(32)),
+	Position = UDim2.fromOffset(0, S(174)),
+	BackgroundTransparency = 1,
+	ZIndex = 53,
+	Parent = content,
+})
+dragBlockTargets[sliderRow] = true
+
+mk("TextLabel", {
+	Size = UDim2.fromOffset(S(84), S(32)),
+	BackgroundTransparency = 1,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "Slider",
+	Font = Enum.Font.Gotham,
+	TextSize = S(11),
+	TextColor3 = Color3.fromRGB(220, 220, 235),
+	ZIndex = 54,
+	Parent = sliderRow,
+})
+
+local sliderTrack = mk("Frame", {
+	Size = UDim2.new(1, -S(100), 0, SLIDER_TRACK_HEIGHT),
+	Position = UDim2.new(0, S(96), 0.5, -math.floor(SLIDER_TRACK_HEIGHT / 2)),
+	BackgroundColor3 = Color3.fromRGB(20, 20, 26),
+	BackgroundTransparency = 0.2,
+	BorderSizePixel = 0,
+	ZIndex = 54,
+	Parent = sliderRow,
+})
+dragBlockTargets[sliderTrack] = true
+sliderTrack.ClipsDescendants = false
+mk("UICorner", { CornerRadius = UDim.new(1, 0), Parent = sliderTrack })
+local sliderTrackStroke = mk("UIStroke", {
+	Thickness = 2,
+	Color = Color3.fromRGB(255, 0, 0),
+	Transparency = 0.15,
+	Parent = sliderTrack,
+})
+table.insert(rainbowStrokes, sliderTrackStroke)
+
+local sliderKnobOuter = mk("Frame", {
+	Size = UDim2.fromOffset(SLIDER_KNOB_SIZE, SLIDER_KNOB_SIZE),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0, 0, 0.5, 0),
+	BackgroundColor3 = Color3.fromRGB(22, 22, 28),
+	BorderSizePixel = 0,
+	ZIndex = 55,
+	Parent = sliderTrack,
+})
+dragBlockTargets[sliderKnobOuter] = true
+mk("UICorner", { CornerRadius = UDim.new(1, 0), Parent = sliderKnobOuter })
+mk("UIStroke", { Thickness = 2, Color = Color3.fromRGB(255, 255, 255), Transparency = 0.2, Parent = sliderKnobOuter })
+
+local sliderKnobInner = mk("Frame", {
+	Size = UDim2.fromOffset(math.max(1, math.floor(SLIDER_KNOB_SIZE * 0.45)), math.max(1, math.floor(SLIDER_KNOB_SIZE * 0.45))),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.new(0.5, 0, 0.5, 0),
+	BackgroundColor3 = Color3.fromRGB(245, 245, 255),
+	BorderSizePixel = 0,
+	ZIndex = 56,
+	Parent = sliderKnobOuter,
+})
+mk("UICorner", { CornerRadius = UDim.new(1, 0), Parent = sliderKnobInner })
+
+local valueRow = mk("Frame", {
+	Size = UDim2.new(1, 0, 0, BUTTON_HEIGHT),
+	Position = UDim2.fromOffset(0, S(210)),
+	BackgroundTransparency = 1,
+	ZIndex = 53,
+	Parent = content,
+})
+dragBlockTargets[valueRow] = true
+
+mk("TextLabel", {
+	Size = UDim2.fromOffset(S(84), BUTTON_HEIGHT),
+	BackgroundTransparency = 1,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "Value",
+	Font = Enum.Font.Gotham,
+	TextSize = S(11),
+	TextColor3 = Color3.fromRGB(220, 220, 235),
+	ZIndex = 54,
+	Parent = valueRow,
+})
+
+local valueBox = mk("TextBox", {
+	Size = UDim2.new(1, -S(100), 1, 0),
+	Position = UDim2.new(0, S(96), 0, 0),
+	BackgroundColor3 = REBIND_BG_IDLE,
+	Text = tostring(walkSpeedValue),
+	Font = Enum.Font.GothamBold,
+	TextSize = S(12),
+	TextColor3 = Color3.fromRGB(245, 245, 255),
+	ClearTextOnFocus = false,
+	ZIndex = 54,
+	Parent = valueRow,
+})
+dragBlockTargets[valueBox] = true
+mk("UICorner", { CornerRadius = UDim.new(0, S(10)), Parent = valueBox })
+mk("UIStroke", { Thickness = 1, Color = Color3.fromRGB(120, 120, 150), Transparency = 0.55, Parent = valueBox })
+
+walkSpeedErrorLabel = mk("TextLabel", {
+	Size = UDim2.new(1, -S(100), 0, S(14)),
+	Position = UDim2.new(0, S(96), 0, S(236)),
+	BackgroundTransparency = 1,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Text = "",
+	Font = Enum.Font.Gotham,
+	TextSize = S(10),
+	TextColor3 = Color3.fromRGB(255, 120, 120),
+	Visible = false,
+	ZIndex = 54,
+	Parent = content,
+})
+
+local function setWalkSpeedError(message: string?)
+	if message and message ~= "" then
+		walkSpeedErrorLabel.Text = message
+		walkSpeedErrorLabel.Visible = true
+	else
+		walkSpeedErrorLabel.Visible = false
+	end
+end
+
+local function updateSliderVisual(value: number)
+	local displayValue = math.clamp(value, 0, WALK_SPEED_SLIDER_MAX)
+	local percent = 0
+	if WALK_SPEED_SLIDER_MAX > 0 then
+		percent = displayValue / WALK_SPEED_SLIDER_MAX
+	end
+	sliderKnobOuter.Position = UDim2.new(percent, 0, 0.5, 0)
+end
+
+local function setWalkSpeedValue(value: number, showLimitError: boolean?)
+	local newValue = math.floor(value + 0.5)
+	if newValue < 0 then newValue = 0 end
+	if newValue > WALK_SPEED_INPUT_MAX then
+		newValue = WALK_SPEED_INPUT_MAX
+		if showLimitError then
+			setWalkSpeedError(("Max is %d"):format(WALK_SPEED_INPUT_MAX))
+		end
+	else
+		setWalkSpeedError(nil)
+	end
+
+	walkSpeedValue = newValue
+	valueBox.Text = tostring(newValue)
+	getgenv().walkSpeedSettings.WalkSpeed.Speed = newValue
+	updateSliderVisual(newValue)
+	if walkSpeedEnabled then
+		applyWalkSpeed()
+	end
+end
+
+setWalkSpeedValue(walkSpeedValue)
+
+local draggingSlider = false
+local function updateSliderFromX(x: number)
+	local absPos = sliderTrack.AbsolutePosition
+	local absSize = sliderTrack.AbsoluteSize
+	if absSize.X <= 0 then return end
+	local alpha = (x - absPos.X) / absSize.X
+	alpha = math.clamp(alpha, 0, 1)
+	local value = alpha * WALK_SPEED_SLIDER_MAX
+	setWalkSpeedValue(value)
+end
+
+sliderTrack.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		draggingSlider = true
+		dragLock = true
+		updateSliderFromX(input.Position.X)
+	end
+end)
+
+sliderKnobOuter.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		draggingSlider = true
+		dragLock = true
+		updateSliderFromX(input.Position.X)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if not draggingSlider then return end
+	if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+	updateSliderFromX(input.Position.X)
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		draggingSlider = false
+		dragLock = false
+	end
+end)
+
+valueBox.Focused:Connect(function()
+	dragLock = true
+end)
+
+valueBox.FocusLost:Connect(function(enterPressed)
+	dragLock = false
+	local parsed = tonumber(valueBox.Text)
+	if not parsed then
+		valueBox.Text = tostring(walkSpeedValue)
+		setWalkSpeedError(nil)
+		return
+	end
+	setWalkSpeedValue(parsed, true)
+end)
+
+-- =========================
 -- KEYBINDS (rebind)
 -- =========================
-sectionHeader("KEYBINDS", 122)
+sectionHeader("KEYBINDS", 264)
 
 local function bindToString(bind)
 	if bind.kind == "KeyCode" then
@@ -698,9 +997,9 @@ local function makePillButton(text, y)
 end
 
 local waitingFor: string? = nil
-local espRebindBtn = makePillButton(("Rebind ESP: %s"):format(bindToString(espBind)), 142)
-local aimRebindBtn = makePillButton(("Rebind Aim: %s"):format(bindToString(aimBind)), 178)
-local noclipRebindBtn = makePillButton(("Rebind Noclip: %s"):format(bindToString(noclipBind)), 214)
+local espRebindBtn = makePillButton(("Rebind ESP: %s"):format(bindToString(espBind)), 284)
+local aimRebindBtn = makePillButton(("Rebind Aim: %s"):format(bindToString(aimBind)), 320)
+local noclipRebindBtn = makePillButton(("Rebind Noclip: %s"):format(bindToString(noclipBind)), 356)
 
 local function stopRebind()
 	waitingFor = nil
@@ -751,19 +1050,79 @@ UserInputService.InputBegan:Connect(function(input, gp)
 	if waitingFor == "ESP" then espBind = newBind end
 	if waitingFor == "AIM" then aimBind = newBind end
 	if waitingFor == "NOCLIP" then noclipBind = newBind end
-	stopRebind()
+stopRebind()
+end)
+
+-- =========================
+-- JOB ID
+-- =========================
+sectionHeader("JOB ID", 402)
+
+local jobIdRow = mk("Frame", {
+	Size = UDim2.new(1, 0, 0, BUTTON_HEIGHT),
+	Position = UDim2.fromOffset(0, S(422)),
+	BackgroundTransparency = 1,
+	ZIndex = 53,
+	Parent = content,
+})
+dragBlockTargets[jobIdRow] = true
+
+local jobIdBox = mk("TextBox", {
+	Size = UDim2.new(1, 0, 1, 0),
+	Position = UDim2.new(0, 0, 0, 0),
+	BackgroundColor3 = REBIND_BG_IDLE,
+	Text = "",
+	PlaceholderText = "Job ID",
+	Font = Enum.Font.GothamBold,
+	TextSize = S(12),
+	TextColor3 = Color3.fromRGB(245, 245, 255),
+	PlaceholderColor3 = Color3.fromRGB(150, 150, 170),
+	ClearTextOnFocus = false,
+	ZIndex = 54,
+	Parent = jobIdRow,
+})
+dragBlockTargets[jobIdBox] = true
+mk("UICorner", { CornerRadius = UDim.new(0, S(10)), Parent = jobIdBox })
+mk("UIStroke", { Thickness = 1, Color = Color3.fromRGB(120, 120, 150), Transparency = 0.55, Parent = jobIdBox })
+
+local copyJobIdBtn = makePillButton("Copy Job ID", 458)
+local autofillJobIdBtn = makePillButton("Auto Fill", 494)
+local joinJobIdBtn = makePillButton("Join", 530)
+
+copyJobIdBtn.MouseButton1Click:Connect(function()
+	if setclipboard then
+		setclipboard(game.JobId)
+	end
+end)
+
+autofillJobIdBtn.MouseButton1Click:Connect(function()
+	jobIdBox.Text = game.JobId
+end)
+
+joinJobIdBtn.MouseButton1Click:Connect(function()
+	local jobId = jobIdBox.Text
+	if jobId == "" then
+		pcall(function()
+			StarterGui:SetCore("SendNotification", {
+				Title = "Job ID",
+				Text = "Please enter a Job ID first.",
+			})
+		end)
+		return
+	end
+	TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
 end)
 
 -- =========================
 -- PARTS (two columns, no scroll)
 -- =========================
-sectionHeader("HITBOX LOCK (ONE AT A TIME)", 260)
+sectionHeader("HITBOX LOCK (ONE AT A TIME)", 584)
 
 local partsArea = mk("Frame", {
 	Name = "PartsArea",
 	Size = UDim2.new(1, 0, 0, 0),
 	AutomaticSize = Enum.AutomaticSize.Y,
-	Position = UDim2.fromOffset(0, S(282)),
+	Position = UDim2.fromOffset(0, S(606)),
 	BackgroundTransparency = 1,
 	ZIndex = 53,
 	Parent = content,
@@ -1056,6 +1415,16 @@ table.insert(rainbowTexts, miniText)
 -- =========================
 -- Dragging (panel + mini)
 -- =========================
+local function isDragBlocked(target: Instance?)
+	while target do
+		if dragBlockTargets[target] then
+			return true
+		end
+		target = target.Parent
+	end
+	return false
+end
+
 local function makeDraggable(frame: GuiObject)
 	local dragging = false
 	local dragStart = Vector2.zero
@@ -1063,6 +1432,7 @@ local function makeDraggable(frame: GuiObject)
 
 	frame.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			if dragLock or isDragBlocked(input.Target) then return end
 			dragging = true
 			dragStart = input.Position
 			startPos = frame.Position
@@ -1175,6 +1545,19 @@ UserInputService.InputBegan:Connect(function(input, gp)
 	if gp then return end
 	if waitingFor then return end
 
+	if walkSpeedEnabled and input.UserInputType == Enum.UserInputType.Keyboard then
+		if input.KeyCode == Enum.KeyCode.W
+			or input.KeyCode == Enum.KeyCode.A
+			or input.KeyCode == Enum.KeyCode.S
+			or input.KeyCode == Enum.KeyCode.D
+			or input.KeyCode == Enum.KeyCode.Up
+			or input.KeyCode == Enum.KeyCode.Left
+			or input.KeyCode == Enum.KeyCode.Down
+			or input.KeyCode == Enum.KeyCode.Right then
+			applyWalkSpeed()
+		end
+	end
+
 	if matchesBind(input, espBind) then
 		if not espArmed then return end
 		espEnabled = not espEnabled
@@ -1226,6 +1609,14 @@ RunService.RenderStepped:Connect(function()
 	end
 	for btn, _ in pairs(rainbowSwitches) do
 		btn.BackgroundColor3 = rainbow
+	end
+
+	if walkSpeedEnabled then
+		local humanoid = getHumanoid()
+		if humanoid and humanoid.WalkSpeed ~= walkSpeedValue then
+			humanoid.WalkSpeed = walkSpeedValue
+		end
+		applyInstantWalkVelocity()
 	end
 
 	if espEnabled then
@@ -1287,8 +1678,13 @@ Players.PlayerRemoving:Connect(function(plr)
 	end
 end)
 
-LocalPlayer.CharacterAdded:Connect(function()
+LocalPlayer.CharacterAdded:Connect(function(character)
 	espEnabled = false
 	removeAllHighlights()
 	aimStop()
+	storedWalkSpeed = nil
+	local humanoid = character:WaitForChild("Humanoid", 5)
+	if walkSpeedEnabled and humanoid then
+		applyWalkSpeed()
+	end
 end)
